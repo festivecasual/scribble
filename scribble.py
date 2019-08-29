@@ -1,8 +1,9 @@
 import random
 import itertools
 import math
+import sys
 
-from PIL import Image, ImageFilter, ImageDraw
+from PIL import Image, ImageFilter, ImageDraw, ImageStat
 
 
 # Image processing code heavily adapted from:
@@ -22,8 +23,8 @@ class Point:
         if y:
             self.y = max(min(self.y, y[1]), y[0])
 
-    def coords(self):
-        return (self.x, self.y)
+    def coords(self, scale=1.0):
+        return (int(self.x * scale), int(self.y * scale))
 
 
 def bresenham(start, finish):
@@ -50,17 +51,18 @@ class Source:
     def __init__(self, img):
         self.original = Image.open(img)
         self.image = self.original.copy().convert('L')
-        self.px = self.image.load()
+
+    def scale_width(self, width):
+        self.image = self.image.resize((width, self.image.height * width // self.image.width))
 
     def darkest_area(self, down_sample=10):
         condensed = self.image.resize((self.image.width // down_sample, self.image.height // down_sample))
-        cpx = condensed.load()
 
         darkest_val = None
         darkest_loc = None
         for x, y in itertools.product(range(condensed.width), range(condensed.height)):
-            if not darkest_val or cpx[x, y] < darkest_val:
-                darkest_val = cpx[x, y] + random.random()
+            if not darkest_val or condensed.getpixel((x, y)) < darkest_val:
+                darkest_val = condensed.getpixel((x, y)) + random.random()
                 darkest_loc = Point(x, y)
 
         return Point(
@@ -72,7 +74,7 @@ class Source:
         'spitfire': lambda: random.randint(-72, -52),
     }
 
-    def darkest_neighbor(self, start, line_length=20, tests=13, angle_method=angle_methods['spitfire']):
+    def darkest_neighbor(self, start, line_length=10, tests=10, angle_method=angle_methods['spitfire']):
         start_angle = angle_method()
         start.constrain((0, self.image.width - 1), (0, self.image.height - 1))
 
@@ -90,7 +92,7 @@ class Source:
             bright_sum, bright_count = 0, 0
             for pt in bresenham(start, finish):
                 bright_count += 1
-                bright_sum += self.px[pt.x, pt.y]
+                bright_sum += self.image.getpixel(pt.coords())
                 if (bright_sum / bright_count) < darkest_value:
                     darkest_value = bright_sum / bright_count
                     darkest_point = Point(pt.x, pt.y)
@@ -98,31 +100,37 @@ class Source:
         return darkest_point
 
     def average_brightness(self):
-        bright_total = 0
-        for x, y in itertools.product(range(self.image.width), range(self.image.height)):
-            bright_total += self.px[x, y]
-        return bright_total / (self.image.width * self.image.height)
+        return ImageStat.Stat(self.image).mean[0]
 
-    def lighten(self, start, finish, amount=10):
+    def lighten(self, start, finish, amount=120):
         for pt in bresenham(start, finish):
-            self.image.putpixel(pt.coords(), (min(255, self.px[pt.x, pt.y] + amount),))
+            self.image.putpixel(pt.coords(), (min(255, self.image.getpixel(pt.coords()) + amount),))
 
 
 if __name__ == '__main__':
-    src = Source('baby.jpg')
-    visual = Image.new('L', (src.image.width, src.image.height), 255)
+    if len(sys.argv) != 2:
+        print('Usage: %s [image]' % sys.argv[0])
+        sys.exit(1)
+
+    src = Source(sys.argv[1])
+    src.scale_width(400)
+
+    visual_scale = 4.0
+
+    visual = Image.new('L', (int(src.image.width * visual_scale), int(src.image.height * visual_scale)), 255)
     model = ImageDraw.Draw(visual)
 
     squiggle_length = 500
+    brightness_threshold = 240
 
     squiggles = 0
-    while src.average_brightness() < 240:
+    while src.average_brightness() < brightness_threshold:
         squiggles += 1
         darkest_start = src.darkest_area()
-        for _ in range(squiggle_length):
+        for s in range(squiggle_length):
             darkest_next = src.darkest_neighbor(darkest_start)
             src.lighten(darkest_start, darkest_next)
-            model.line([darkest_start.coords(), darkest_next.coords()], 0)
+            model.line([darkest_start.coords(scale=visual_scale), darkest_next.coords(scale=visual_scale)], 0)
             darkest_start = darkest_next
-        print('squiggles = %d, brightness =' % squiggles, src.average_brightness())
+
     visual.show()
